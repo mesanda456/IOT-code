@@ -141,17 +141,22 @@ void uploadSnapshot(bool pushAlert = false) {
 
   // Add GPS data
   if (gps.location.isValid()) {
-    double lat = gps.location.lat();
-    double lon = gps.location.lng();
-    json.set("latitude", lat);
-    json.set("longitude", lon);
+    double latitude = gps.location.lat();
+    double longitude = gps.location.lng();
 
-    if (millis() - lastAddressTime > ADDRESS_INTERVAL) {
-      String address = fetchAddress(lat, lon);
-      if (address.length()) json.set("address", address);
-      lastAddressTime = millis();
+    json.set("latitude", latitude);
+    json.set("longitude", longitude);
+
+    unsigned long currentTime = millis();
+    if (currentTime - lastAddressTime >= ADDRESS_INTERVAL) {
+      String currentAddress = fetchAddress(latitude, longitude);
+      if (currentAddress != "") {
+          json.set("address", currentAddress);
+      }
+      lastAddressTime = currentTime;
     }
-  }
+}
+
 
   // FIRE detection logic
   bool isNight = (flameAnalog > 2000);
