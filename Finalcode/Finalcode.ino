@@ -1,3 +1,4 @@
+
 #include <WiFi.h>
 #include <Firebase_ESP_Client.h>
 #include <ArduinoJson.h>
@@ -36,16 +37,13 @@ int SMOKE_THRESHOLD = 1500;
 #define RAIN_AO 39
 #define LDR_PIN 36
 
-// ---------------- Servo ----------------
+// ---------------- Servo & Buzzer ----------------
 Servo servo;
 #define SERVO_PIN 13
+#define BUZZER_PIN 18
 int STOP_VAL = 90;
 int FORWARD_SLOW = 80;
 int BACKWARD_SLOW = 100;
-
-// ---------------- LED BULBS ----------------
-#define RED_BULB 18      // 🔴 Fire alert
-#define GREEN_BULB 19    // 🟢 Safe mode
 
 // ---------------- GPS ----------------
 #define RXD2 16
@@ -56,8 +54,24 @@ TinyGPSPlus gps;
 
 // ---------------- Timers ----------------
 unsigned long lastUpload = 0;
-const unsigned long UPLOAD_INTERVAL = 2000; // 2s for live updates
-const char* DEVICE_PATH = "forest_devices/device_01";
+const unsigned long UPLOAD_INTERVAL = 10000; // 10s
+const char* DEVICE_PATH = "forest_devices/device_02";
+
+// ---------------- Remote Control ----------------
+bool servoEnabled = true;
+bool flameEnabled = true;
+
+void readControls() {
+  String path = String(DEVICE_PATH) + "/controls";
+
+  if (Firebase.RTDB.getBool(&fbdo, path + "/servoEnabled")) {
+    servoEnabled = fbdo.boolData();
+  }
+
+  if (Firebase.RTDB.getBool(&fbdo, path + "/flameEnabled")) {
+    flameEnabled = fbdo.boolData();
+  }
+}
 
 // ---------------- Firebase Setup ----------------
 void setupFirebase() {
@@ -68,7 +82,17 @@ void setupFirebase() {
   config.token_status_callback = tokenStatusCallback;
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
+
+  // Create controls node if it doesn't exist
+  String controlsPath = String(DEVICE_PATH) + "/controls";
+  if (!Firebase.RTDB.getBool(&fbdo, controlsPath + "/servoEnabled")) {
+    Firebase.RTDB.setBool(&fbdo, controlsPath + "/servoEnabled", true);
+  }
+  if (!Firebase.RTDB.getBool(&fbdo, controlsPath + "/flameEnabled")) {
+    Firebase.RTDB.setBool(&fbdo, controlsPath + "/flameEnabled", true);
+  }
 }
+
 
 // ---------------- Upload Snapshot ----------------
 void uploadSnapshot(bool pushAlert = false) {
@@ -85,20 +109,17 @@ void uploadSnapshot(bool pushAlert = false) {
   String rainStatus = (rainPercent < 33) ? "Dry" : (rainPercent < 66) ? "Light Rain" : "Heavy Rain";
 
   int ldrValue = analogRead(LDR_PIN);
-  String lightDesc = (ldrValue <= 500) ? "Very bright light 🌞" :
-                     (ldrValue <= 2000) ? "Normal indoor light 💡" :
-                     "Dark / Night 🌑";
+  String lightDesc = (ldrValue <= 500) ? "Very bright light 🌞" : (ldrValue <= 2000) ? "Normal indoor light 💡" : "Dark / Night 🌑";
 
   bool isNight = (ldrValue > 2000);
+  bool fireDetected = flameEnabled && ((!isNight && (gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45))) ||
+                      (isNight && (flameDigital == LOW || flameAnalog > 2000 || gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45))));
 
-  bool fireDetected =
-    (!isNight && (gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45))) ||
-    (isNight && (flameDigital == LOW || flameAnalog > 2000 ||
-                 gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45)));
+  // GPS coordinates
+  double latitude = gps.location.isValid() ? gps.location.lat() : 0.0;
+  double longitude = gps.location.isValid() ? gps.location.lng() : 0.0;
 
-  double latitude = gps.location.isValid() ? gps.location.lat() : -1.0;
-  double longitude = gps.location.isValid() ? gps.location.lng() : -1.0;
-
+  // JSON payload
   json.set("timestamp", String(millis()));
   json.set("temperature", isnan(temp)? 0 : temp);
   json.set("humidity", isnan(hum)? 0 : hum);
@@ -122,18 +143,13 @@ void uploadSnapshot(bool pushAlert = false) {
   }
 }
 
-// ---------------- SETUP ----------------
+// ---------------- MAIN SETUP ----------------
 void setup() {
-  Serial.begin(115200);
   dht.begin();
 
   pinMode(FLAME_DO, INPUT);
-
-  pinMode(RED_BULB, OUTPUT);
-  pinMode(GREEN_BULB, OUTPUT);
-
-  digitalWrite(RED_BULB, LOW);
-  digitalWrite(GREEN_BULB, HIGH); // Start in SAFE mode
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
 
   servo.setPeriodHertz(50);
   servo.attach(SERVO_PIN, 500, 2500);
@@ -142,20 +158,16 @@ void setup() {
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
 
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(300);
-  }
-  Serial.println("\nWiFi connected.");
+  while (WiFi.status() != WL_CONNECTED) delay(300);
 
   setupFirebase();
 }
 
-// ---------------- LOOP ----------------
+// ---------------- MAIN LOOP ----------------
 void loop() {
-
   while (gpsSerial.available() > 0) gps.encode(gpsSerial.read());
+
+  readControls();  // <- Read servo and flame sensor flags from Firebase
 
   float temp = dht.readTemperature();
   float hum  = dht.readHumidity();
@@ -165,32 +177,25 @@ void loop() {
 
   int rainAnalog = analogRead(RAIN_AO);
   float rainPercent = (1.0 - ((float)rainAnalog / 4095.0)) * 100.0;
+  String rainStatus = (rainPercent < 33) ? "Dry" : (rainPercent < 66) ? "Light Rain" : "Heavy Rain";
+
   int ldrValue = analogRead(LDR_PIN);
   bool isNight = (ldrValue > 2000);
 
-  bool fireDetected =
-    (!isNight && (gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45))) ||
-    (isNight && (flameDigital == LOW || flameAnalog > 2000 ||
-                 gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45)));
+  bool fireDetected = flameEnabled && ((!isNight && (gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45))) ||
+                      (isNight && (flameDigital == LOW || flameAnalog > 2000 || gasValue >= SMOKE_THRESHOLD || (!isnan(temp) && temp >= 45))));
 
-  // 🔥 FIRE ALERT → Red bulb ON, green bulb OFF
   if (fireDetected) {
-    digitalWrite(RED_BULB, HIGH);
-    digitalWrite(GREEN_BULB, LOW);
     servo.write(STOP_VAL);
+    digitalWrite(BUZZER_PIN, HIGH);
     uploadSnapshot(true);
     delay(3000);
-  }
-  else {
-    digitalWrite(RED_BULB, LOW);
-    digitalWrite(GREEN_BULB, HIGH);
-
-    if (isNight) {
-      servo.write(FORWARD_SLOW); delay(1200);
-      servo.write(STOP_VAL); delay(300);
-      servo.write(BACKWARD_SLOW); delay(1200);
-      servo.write(STOP_VAL); delay(300);
-    }
+    digitalWrite(BUZZER_PIN, LOW);
+  } else if (isNight && servoEnabled) {
+    servo.write(FORWARD_SLOW); delay(1200);
+    servo.write(STOP_VAL); delay(300);
+    servo.write(BACKWARD_SLOW); delay(1200);
+    servo.write(STOP_VAL); delay(300);
   }
 
   if (millis() - lastUpload > UPLOAD_INTERVAL) {
@@ -198,5 +203,5 @@ void loop() {
     lastUpload = millis();
   }
 
-  delay(300);
+  delay(2000);
 }
