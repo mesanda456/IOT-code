@@ -8,12 +8,12 @@
 #include <ESP32Servo.h>
 
 // ---------------- WIFI ----------------
-const char* ssid = "Dulmina";
-const char* password = "dula1790";
+const char* ssid = "wifiname";
+const char* password = "password";
 
 // ---------------- FIREBASE ----------------
 #define FIREBASE_HOST "https://iot-forest-default-rtdb.asia-southeast1.firebasedatabase.app/"
-#define FIREBASE_API_KEY "AIzaSyBmEE-Bm7HICrRigTgzZLSKjwllMTJP_-s"
+#define FIREBASE_API_KEY "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -79,8 +79,8 @@ void readControls() {
 void setupFirebase() {
   config.api_key = FIREBASE_API_KEY;
   config.database_url = FIREBASE_HOST;
-  auth.user.email = "kulasekaradulmina95@gmail.com";
-  auth.user.password = "dula1790";
+  auth.user.email = "sssss@gmail,com";
+  auth.user.password = "12345678";
   config.token_status_callback = tokenStatusCallback;
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
